@@ -87,7 +87,10 @@ ErrorCode Backend::onResizeEnd() {
     return NO_ERROR;
 }
 bool Backend::onReleaseBuffer(const Tensor* tensor, StorageType storageType) {
-    TensorUtils::getDescribe(tensor)->mem.reset(nullptr);
+    this->onRelease(tensor, storageType);
+    if (storageType != Backend::STATIC_PLAN) {
+        TensorUtils::getDescribe(tensor)->mem.reset(nullptr);
+    }
     return true;
 }
 const std::string Backend::externalFile() {

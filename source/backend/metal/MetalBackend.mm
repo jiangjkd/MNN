@@ -60,6 +60,8 @@ MetalBackend::MetalBackend(std::shared_ptr<EagerBufferAllocator> staticMem, cons
 }
 MetalBackend::~MetalBackend() {
     // Do nothing
+    delete mStaticPlanMem;
+    mStaticPlanMem = nullptr;
 }
 void *MetalBackend::context() const {
     return mRuntime->context();
@@ -72,6 +74,7 @@ public:
         mAllocator = allocator;
     }
     virtual ~ MetalMemRelease() {
+        printf("MetalMemRelease %p\n", mBuffer.first);
         mAllocator->free(mBuffer);
     }
     MemChunk chunk() override {
@@ -102,6 +105,7 @@ Backend::MemObj* MetalBackend::onAcquire(const Tensor *_tensor, StorageType stor
         auto wR = ROUND_UP(width + 3, 4) - width;
         size = batch * alignC * width * height;
         size = size + hR * width * 4 + wR * 4;
+        printf("alignC = %d width = %d height = %d elem count = %d \n",alignC, width, height, size);
     } else {
         size = tensor->elementSize();
         size = ROUND_UP(size, 4);
@@ -109,7 +113,6 @@ Backend::MemObj* MetalBackend::onAcquire(const Tensor *_tensor, StorageType stor
     if (0 == size) {
         return nullptr;
     }
-    
     // use metal_float when meets float
     if (halide_type_float == tensor->buffer().type.code && tensor->buffer().type.bits == 32) {
         size*= sizeof(metal_float);
@@ -117,38 +120,211 @@ Backend::MemObj* MetalBackend::onAcquire(const Tensor *_tensor, StorageType stor
         size *= tensor->getType().bytes();
     }
 
+    if (storageType == Backend::STATIC_PLAN) {
+        onAcquireStaticPlan(_tensor, size);
+        return nullptr;
+    }
     // reuse if possible
     MemChunk buffer;
     EagerBufferAllocator* allocator = nullptr;
     switch (storageType) {
         case Backend::STATIC: {
+            printf("onAcquire -- STATIC\n");
             buffer = mStaticBufferPool->alloc(size, false);
             allocator = mStaticBufferPool.get();
         } break;
         case Backend::DYNAMIC: {
+            printf("onAcquire -- DYNAMIC  size = %d\n", size);
             buffer = mBufferPool->alloc(size, false);
             allocator = mBufferPool.get();
+            printf("get buffer ptr %p\n", buffer.first);
         } break;
         case Backend::DYNAMIC_SEPERATE: {
+            printf("onAcquire -- DYNAMIC_SEPERATE\n");
             buffer = mBufferPool->alloc(size, true);
             allocator = mBufferPool.get();
+            printf("get buffer ptr %p\n", buffer.first);
         } break;
     }
-    
+
     if(nullptr == buffer.first) {
         MNN_ERROR("onAcquireBuffer error!\n");
         return nullptr;
     };
-    
+
     // ptr of MetalBufferAlloc
     auto host = buffer.first;
     ((Tensor*)_tensor)->buffer().device = (uint64_t)host;
     auto des = TensorUtils::getDescribe(_tensor);
     des->extra.offset = buffer.second;
-    
+
     return new MetalMemRelease(buffer, allocator);
 }
 
+void MetalBackend::onAcquireFromStaticPlan(const Tensor *_tensor) {
+    if (mStaticPlanMem == nullptr) {
+        MemChunk buffer;
+        EagerBufferAllocator *allocator = nullptr;
+        buffer = mBufferPool->alloc(mStaticPlanSize, true);
+        allocator = mBufferPool.get();
+        mStaticPlanMem =  new MetalMemRelease(buffer, allocator);//std::make_shared<MetalMemRelease>(buffer, allocator);
+        printf("onAcquireFromStaticPlan get buffer ptr %p\n", buffer.first);
+    }
+    if (0 == ((Tensor*)_tensor)->buffer().device) {
+        auto tuple = mTensorChunkInfoMap[_tensor];
+        size_t begin = std::get<0>(tuple);
+        size_t end = std::get<1>(tuple);
+
+        printf("%p begin = %d end = %d\n", _tensor, begin, end);
+
+        auto host = mStaticPlanMem->chunk().first;
+        ((Tensor*)_tensor)->buffer().device = (uint64_t)host;
+        auto des = TensorUtils::getDescribe(_tensor);
+        des->extra.offset = begin;
+    }
+
+}
+
+void MetalBackend::onAcquireStaticPlan(const Tensor *_tensor, size_t size) {
+    auto tensor  = const_cast<Tensor *>(_tensor);
+    auto it = std::find_if(mUseChunkInfoList.begin(), mUseChunkInfoList.end(),[&](const MemChunkInfo& ck){
+        return ck.t == tensor;
+    });
+    if (it == mUseChunkInfoList.end()) {
+        if (mFreeChunkInfoList.empty()) {
+            size_t begin = 0;
+            if (false == mUseChunkInfoList.empty()) {
+                auto ck = mUseChunkInfoList.back();
+                begin = ck.end;
+            }
+            mUseChunkInfoList.emplace_back(MemChunkInfo{const_cast<Tensor *>(_tensor), begin, begin + size});
+            mTensorChunkInfoMap[_tensor] = std::make_tuple(begin, begin + size);
+            mStaticPlanSize += size;
+            printf("size = %d mStaticPlanSize = %d\n", size, mStaticPlanSize);
+        } else {
+            auto& freeCk = mFreeChunkInfoList.back();
+            // find fit size
+            if (freeCk.size() >= size) {
+                size_t begin = freeCk.begin;
+                size_t rest_size = freeCk.size() - size;
+                if (rest_size > 0) {
+                    freeCk.begin += size;
+                } else {
+                    mFreeChunkInfoList.pop_back();// 刚好大小相等，就删除
+                }
+                mUseChunkInfoList.emplace_back(MemChunkInfo{const_cast<Tensor *>(_tensor), begin, begin + size});
+                mTensorChunkInfoMap[_tensor] = std::make_tuple(begin, begin + size);
+            } else { // can not find fit size, need expand chunk
+                //printf("can not find fit size, need expand chunk\n");
+                auto ck = mFreeChunkInfoList.back();
+                size_t ckEnd = ck.end;
+                size_t expand_size = size - ck.size();
+                mStaticPlanSize += expand_size;
+                //printf("expand_size = %d mStaticPlanSize = %d\n", expand_size, mStaticPlanSize);
+                // correct pos
+                for (auto& ck_use : mUseChunkInfoList) {
+                    if (ck_use.begin >= ckEnd) {
+                        ck_use.begin += expand_size;
+                        ck_use.end += expand_size;
+                    }
+                }
+                for (auto& ck_free : mFreeChunkInfoList) {
+                    if (ck_free.begin >= ckEnd) {
+                        ck_free.begin += expand_size;
+                        ck_free.end += expand_size;
+                    }
+                }
+
+                for (auto& tck : mTensorChunkInfoMap) {
+                    auto key = tck.first;
+                    auto& value = tck.second;
+                    auto begin = std::get<0>(value);
+                    auto end = std::get<1>(value);
+                    if (begin >= ckEnd) {
+                        begin += expand_size;
+                        end += expand_size;
+                        mTensorChunkInfoMap[key] = std::make_tuple(begin, end);
+                    }
+                }
+                size_t begin = ck.begin;
+                mUseChunkInfoList.emplace_back(MemChunkInfo{const_cast<Tensor *>(_tensor), begin, begin + size});
+                mTensorChunkInfoMap[_tensor] = std::make_tuple(begin, begin + size);
+                mFreeChunkInfoList.pop_back();//remove
+
+            }
+        }
+        mUseChunkInfoList.sort([](const MemChunkInfo& a, const MemChunkInfo& b){
+            return a.begin < b.begin;
+        });
+        mFreeChunkInfoList.sort([](const MemChunkInfo& a, const MemChunkInfo& b){
+            return a.size() < b.size();
+        });
+//        printf("after alloc mUseChunkInfoList:\n");
+//        for (auto ck : mUseChunkInfoList) {
+//            printf("%p begin %d end %d size: %d\n", ck.t, ck.begin, ck.end, ck.size());
+//        }
+//        printf("mFreeChunkInfoList:\n");
+//        for (auto ck : mFreeChunkInfoList) {
+//            printf("%p begin %d end %d size: %d\n", ck.t, ck.begin, ck.end, ck.size());
+//        }
+    }
+}
+
+void MetalBackend::onReleaseStaticPlan(const Tensor* tensor) {
+    auto it = std::find_if(mUseChunkInfoList.begin(), mUseChunkInfoList.end(),[&](const MemChunkInfo ck){
+        return ck.t == tensor;
+    });
+    if (it != mUseChunkInfoList.end()) {
+        mFreeChunkInfoList.emplace_back(*it);
+        mUseChunkInfoList.erase(it);
+    }
+    mUseChunkInfoList.sort([](const MemChunkInfo& a, const MemChunkInfo& b){
+        return a.begin < b.begin;
+    });
+
+    //merge continue space
+    mFreeChunkInfoList.sort([](const MemChunkInfo& a, const MemChunkInfo& b){
+        return a.begin < b.begin;
+    });
+    std::list<MemChunkInfo> newFreeChunkInfoList;
+    while (false == mFreeChunkInfoList.empty()) {
+        auto& ck = mFreeChunkInfoList.front();
+
+        size_t nBegin = ck.begin;
+        size_t nEnd = ck.end;
+        mFreeChunkInfoList.pop_front();
+
+        while (false == mFreeChunkInfoList.empty()) {
+            auto& ck = mFreeChunkInfoList.front();
+            if (ck.begin == nEnd) {// 连续空间
+                nEnd = ck.end;
+                mFreeChunkInfoList.pop_front();
+            } else { // 不连续了 中断
+                break;
+            }
+        }
+        newFreeChunkInfoList.emplace_back(MemChunkInfo{nullptr, nBegin, nEnd});
+    }
+    mFreeChunkInfoList.swap(newFreeChunkInfoList);
+
+    mFreeChunkInfoList.sort([](const MemChunkInfo& a, const MemChunkInfo& b){
+        return a.size() < b.size();
+    });
+//    printf("after release mUseChunkInfoList:\n");
+//    for (auto ck : mUseChunkInfoList) {
+//        printf("%p begin %d end %d size: %d\n", ck.t, ck.begin, ck.end, ck.size());
+//    }
+//    printf("mFreeChunkInfoList:\n");
+//    for (auto ck : mFreeChunkInfoList) {
+//        printf("%p begin %d end %d size: %d\n", ck.t, ck.begin, ck.end, ck.size());
+//    }
+}
+bool MetalBackend::onRelease(const Tensor* tensor, StorageType storageType) {
+    if (storageType == Backend::STATIC_PLAN) {
+        onReleaseStaticPlan(tensor);
+    }
+    return true;
+}
 bool MetalBackend::onClearBuffer() {
     mBufferPool->release(true);
     return true;
@@ -212,7 +388,7 @@ bool MetalBackend::isCmdBufferCommit() {
     if(!ctx.isCommitEachShader) {
         return false;
     }
-    
+
     //TODO: set magic number
     const int magicNum = 2;
     mEncoderCount++;
@@ -347,7 +523,7 @@ void MetalBackend::onResizeBegin() {
     mFrameEncodeCache = false;
     mOpEncoderSet = false;
     mOpEncoders.clear();
-    
+
     // Finish last inference task if needed
     flushEncoder();
     auto ctx = (__bridge MNNMetalContext *)context();
@@ -385,7 +561,7 @@ void MetalBackend::onCopyHostToDevice(const Tensor *src, const Tensor *dst) cons
             ::memcpy(mShapeH2D.contents, limits, sizeof(limits));
             auto encoder    = [ctx encoder];
             auto bandwidth  = [ctx load: @"downcast_float4" encoder:encoder];
-            
+
             [encoder setBuffer:host offset:0 atIndex:0];
             [encoder setBuffer:device offset:TensorUtils::getDescribe(dst)->extra.offset atIndex:1];
             [encoder setBuffer:mShapeH2D offset:0 atIndex:2];
@@ -418,7 +594,7 @@ void MetalBackend::onCopyHostToDevice(const Tensor *src, const Tensor *dst) cons
         MNN_ASSERT(kernel != nil); // unsupported sfmt to dfmt
 
         auto bandwidth = [ctx load:kernel encoder:encoder];
-        
+
         [encoder setBuffer:buffer offset:0 atIndex:0];
         [encoder setBuffer:device offset:TensorUtils::getDescribe(dst)->extra.offset atIndex:1];
         [encoder setBuffer:mShapeH2D offset:0 atIndex:2];
@@ -463,7 +639,7 @@ void MetalBackend::onCopyDeviceToHost(const Tensor *src, const Tensor *dst) cons
             threads.second.width = threads.second.width <= threads.first.width ? threads.second.width : threads.first.width;
             threads.first.width = UP_DIV(threads.first.width, threads.second.width);
             [encoder dispatchThreadgroups:threads.first threadsPerThreadgroup:threads.second];
-            
+
             [encoder endEncoding];
             [ctx commit];
             [ctx wait];
@@ -554,7 +730,7 @@ id<MTLComputeCommandEncoder> MetalBackend::encoder() const {
 
 void MetalBackend::onCopyBuffer(const Tensor *src, const Tensor *dst, id<MTLComputeCommandEncoder> encoder, id<MTLBuffer> shape) const {
     MNN_ASSERT(src->buffer().dimensions == dst->buffer().dimensions);
-    
+
     if (!src->buffer().host && !dst->buffer().host) {
         onCopyDeviceToDevice(src, dst, encoder, shape);
     } else if (!src->buffer().host && dst->buffer().host) {
@@ -562,7 +738,7 @@ void MetalBackend::onCopyBuffer(const Tensor *src, const Tensor *dst, id<MTLComp
 
     } else if (src->buffer().host && !dst->buffer().host) {
         onCopyHostToDevice(src, dst);
-        
+
     } else {
         MNN_ASSERT(false); // should not be handled here
     }
@@ -592,32 +768,32 @@ void MetalRuntime::setGpuMode(const int mode_num) {
     if(totalSet > 0) {
         MNN_PRINT("warning: set BUFFER and IMAGE mode is not useful for metal, it doesn't matter, cl_mode:%x！\n", mode_num);
     }
-    
+
     totalSet = 0;
     isSet = (mode_num & MNN_GPU_TUNING_NONE);
     if(isSet) {
         mTuneLevel = Never;
         totalSet++;
     }
-    
+
     isSet = (mode_num & MNN_GPU_TUNING_FAST);
     if(isSet) {
         mTuneLevel = Fast;
         totalSet++;
     }
-    
+
     isSet = (mode_num & MNN_GPU_TUNING_NORMAL);
     if(isSet) {
         mTuneLevel = Normal;
         totalSet++;
     }
-    
+
     isSet = (mode_num & MNN_GPU_TUNING_HEAVY);
     if(isSet) {
         mTuneLevel = Heavy;
         totalSet++;
     }
-    
+
     isSet = (mode_num & MNN_GPU_TUNING_WIDE);
     if(isSet) {
         mTuneLevel = Wide;
@@ -727,7 +903,7 @@ std::pair<const void*, size_t> MetalRuntime::makeCache(TunedInfo* info) {//make 
         std::unique_ptr<AutotuningT> tuning(new AutotuningT);
         tuning->key = iter.first.first;
         tuning->threadSize = iter.first.second;
-        
+
         tuning->groupNum = std::get<0>(iter.second);
         tuning->groupSize = std::get<1>(iter.second);
         tuning->timeCost = std::get<2>(iter.second);
@@ -864,7 +1040,12 @@ bool MetalRuntime::onSetCache(const void* buffer, size_t size) {//set Cache
 }
 
 MemChunk MetalRuntimeAllocator::onAlloc(size_t size, size_t align) {
-    auto buffer = [mDevice newBufferWithLength:size options:MTLCPUCacheModeDefaultCache];
+    static int total = 0;
+    total += size;
+    printf("metal onAlloc %d  total %d\n", size, total );
+    auto buffer = [mDevice newBufferWithLength:size options:MTLResourceStorageModePrivate];
+    //auto buffer = [mDevice newBufferWithLength:size options:MTLResourceStorageModePrivate];
+    //auto buffer = [mDevice newBufferWithLength:size options:MTLResourceCPUCacheModeDefaultCache];
     auto mMetalBufferAlloc = new MetalBufferAlloc(buffer);
     return MemChunk((void *)mMetalBufferAlloc, 0);
 }

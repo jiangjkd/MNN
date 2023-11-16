@@ -16,6 +16,8 @@
 #include "MetalDefine.h"
 #include <MNN/ErrorCode.hpp>
 #include <vector>
+#include <list>
+#include <algorithm>
 //#include "MNNMetalContext.h"
 #include "MetalCache_generated.h"
 using namespace MetalCache;
@@ -25,6 +27,16 @@ namespace MNN {
 
 /** MetalRuntime */
 enum MetalTuneLevel {Never = 0, Heavy = 1, Wide = 2, Normal = 3, Fast = 4};
+
+struct MemChunkInfo {
+    Tensor* t;
+    size_t begin;
+    size_t end;
+public:
+    size_t size() const {
+        return end - begin;
+    }
+};
 
 struct TunedInfo;
 class MetalRuntime : public Runtime {
@@ -135,6 +147,8 @@ public:
     }
     
     virtual Backend::MemObj* onAcquire(const Tensor *Tensor, StorageType storageType) override;
+    virtual void onAcquireFromStaticPlan(const Tensor *Tensor) override;
+    virtual bool onRelease(const Tensor* tensor, StorageType storageType) override;
     virtual bool onClearBuffer() override;
     virtual void onCopyBuffer(const Tensor *srcTensor, const Tensor *dstTensor) const override;
 
@@ -180,6 +194,14 @@ public:
     bool isCmdBufferCommit();
     
 private:
+    //start for mem static plan
+    std::list<MemChunkInfo> mUseChunkInfoList;
+    std::list<MemChunkInfo> mFreeChunkInfoList;
+    size_t mStaticPlanSize = 0;
+    std::unordered_map<const Tensor*,  std::tuple<size_t, size_t>> mTensorChunkInfoMap;
+    Backend::MemObj* mStaticPlanMem = nullptr;
+    //end
+
     const MetalRuntime* mRuntime;
     std::vector<id<MTLBuffer>> mHoldBuffers;
     id<MTLBuffer> mShapeH2D;
@@ -195,6 +217,8 @@ private:
     std::shared_ptr<EagerBufferAllocator> mStaticBufferPool;
 
 private:
+    void onAcquireStaticPlan(const Tensor *Tensor, size_t size);
+    void onReleaseStaticPlan(const Tensor* tensor);
     mutable id<MTLBuffer> mHostBuffer = nullptr;
     void onCopyHostToDevice(const Tensor *src, const Tensor *dst) const;
     void onCopyDeviceToHost(const Tensor *src, const Tensor *dst) const;

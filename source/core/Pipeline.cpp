@@ -138,12 +138,14 @@ static void _releaseTensor(Tensor* origin, bool mAllocInput) {
     if (TensorUtils::getDescribe(origin)->usage != Tensor::InsideDescribe::CONSTANT) {
         TensorUtils::getDescribe(origin)->useCount -= 1;
     }
+    printf("_releaseTensor %p useCount = %d\n", origin, TensorUtils::getDescribe(origin)->useCount);
     if (0 == TensorUtils::getDescribe(origin)->useCount &&
         TensorUtils::getDescribe(origin)->memoryType == Tensor::InsideDescribe::MEMORY_BACKEND) {
         auto needRelease = _needRelease(origin, !mAllocInput);
         auto bn          = TensorUtils::getDescribe(origin)->getBackend();
         if (nullptr != bn && needRelease) {
             // For zeroshape may not has bn
+            printf("release buffer tensor: %p\n", origin);
             bn->onReleaseBuffer(origin, Backend::DYNAMIC);
         }
     }
@@ -162,6 +164,30 @@ static bool _allocTensor(Tensor* t, Backend* curBackend, bool outputStatic) {
     return true;
 }
 
+static bool _planAllocTensor(Tensor* t, Backend* curBackend) {
+    auto des = TensorUtils::getDescribe(t);
+    if (nullptr == des->mem.get()) {
+        TensorUtils::setLinearLayout(t);
+        return curBackend->onAcquireBuffer(t, Backend::STATIC_PLAN);
+    }
+    return true;
+}
+
+static void _planReleaseTensor(Tensor* origin, bool mAllocInput) {
+    if (TensorUtils::getDescribe(origin)->usage != Tensor::InsideDescribe::CONSTANT) {
+        TensorUtils::getDescribe(origin)->useCount -= 1;
+    }
+    printf("_planReleaseTensor %p useCount = %d\n", origin, TensorUtils::getDescribe(origin)->useCount);
+    if (0 == TensorUtils::getDescribe(origin)->useCount &&
+        TensorUtils::getDescribe(origin)->memoryType == Tensor::InsideDescribe::MEMORY_BACKEND) {
+        auto needRelease = _needRelease(origin, !mAllocInput);
+        auto bn          = TensorUtils::getDescribe(origin)->getBackend();
+        if (nullptr != bn && needRelease) {
+            printf("release buffer tensor: %p\n", origin);
+            bn->onReleaseBuffer(origin, Backend::STATIC_PLAN);
+        }
+    }
+}
 void Pipeline::UnitInfo::setUp(const Command& command, int index, const Op* originOp, int totalIndex) {
     if (nullptr != command.op->name()) {
         mContent->name = command.op->name()->str();
@@ -920,9 +946,124 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc, bool forbidReplace) {
     }
     // Compute RefCount End
 
+
+#if 1
+    mBackend->onResizeBegin();
+    mBackupBackend->onResizeBegin();
+    // Static Memory Alloc Plan for Metal
+    int cc = 0;
+    for (auto &info: mInfo.second) {
+        auto &buffer = info.executeBuffer;
+        for (int cmdIndex = 0; cmdIndex < buffer.command.size(); ++cmdIndex) {
+            auto &iterP = buffer.command[cmdIndex];
+            auto &iter = *iterP;
+
+            auto curBackend = iter.execution->backend();
+            if (curBackend->type() == MNN_FORWARD_METAL) {
+                printf("cc=%d ####################optype: %s \n", cc, EnumNameOpType(iter.op->type()));
+                for (auto t: iter.workInputs) {
+                    auto rc = TensorUtils::getDescribe(t)->useCount;
+                    printf("input......: %p use count = %d\n", t, rc);
+                    _planAllocTensor(t, curBackend);
+                }
+                for (auto t: iter.workOutputs) {
+                    printf("output......:%p use count = %d\n", t, TensorUtils::getDescribe(t)->useCount);
+                    _planAllocTensor(t, curBackend);
+                }
+                auto code = iter.execution->onResizeStaticMemPlan(iter.workInputs, iter.workOutputs);
+                if (NO_ERROR != code && (!iter.info.get())) {
+                    MNN_ERROR("onResizeStaticMemPlan error for type = %s, name = %s \n", iter.info->type().c_str(), iter.info->name().c_str());
+                    return code;
+                }
+                // Free mid tensor
+                for (auto t: iter.workInputs) {
+                    _planReleaseTensor(t, mAllocInput);
+                }
+                cc++;
+            }
+        }
+    }
+    printf("Alloc StaticPlan.....\n");
+    // Alloc StaticPlan
+    cc = 0;
+    for (auto &info: mInfo.second) {
+        auto &buffer = info.executeBuffer;
+        for (int cmdIndex = 0; cmdIndex < buffer.command.size(); ++cmdIndex) {
+            auto &iterP = buffer.command[cmdIndex];
+            auto &iter = *iterP;
+
+            auto curBackend = iter.execution->backend();
+            if (curBackend->type() == MNN_FORWARD_METAL) {
+                printf("####################optype: %s \n", EnumNameOpType(iter.op->type()));
+
+                for (auto t: iter.workInputs) {
+                    printf("input......: %p\n", t);
+                    curBackend->onAcquireFromStaticPlan(t);
+                }
+                for (auto t: iter.workOutputs) {
+                    printf("output......: %p\n", t);
+                    curBackend->onAcquireFromStaticPlan(t);
+                }
+                printf("cc=%d--------------optype: %s onResize\n",cc, EnumNameOpType(iter.op->type()));
+                auto code = iter.execution->onResize(iter.workInputs, iter.workOutputs);
+                if (NO_ERROR != code && (!iter.info.get())) {
+                    MNN_ERROR("Resize error for type = %s, name = %s \n", iter.info->type().c_str(), iter.info->name().c_str());
+                    return code;
+                }
+                cc++;
+            } else {
+                if (mAllocInput) {
+                    for (auto t : iter.workInputs) {
+                        auto rc = TensorUtils::getDescribe(t)->useCount;
+                        if (rc == 0) {
+                            printf("break\n");
+                        }
+                        printf("input......: %p use count = %d\n", t, rc);
+                        auto allocRes = _allocTensor(t, curBackend, mOutputStatic);
+                        if (!allocRes) {
+                            return OUT_OF_MEMORY;
+                        }
+                    }
+                }
+                {
+                    for (auto t : iter.workOutputs) {
+                        printf("output......: %p\n", t);
+                        auto res = _allocTensor(t, curBackend, mOutputStatic);
+                        if (!res) {
+                            return OUT_OF_MEMORY;
+                        }
+                    }
+                }
+#ifdef MNN_PIPELINE_DEBUG
+                if (iter.info != nullptr) {
+                    MNN_PRINT("before Resize 2, calling: %s - %d \n", iter.info->name().c_str(), cmdIndex);
+                }
+#endif
+                auto code = iter.execution->onResize(iter.workInputs, iter.workOutputs);
+                if (NO_ERROR != code && (!iter.info.get())) {
+                    MNN_ERROR("Resize error for type = %s, name = %s \n", iter.info->type().c_str(), iter.info->name().c_str());
+                    return code;
+                }
+                // Free mid tensor
+                for (auto t : iter.workInputs) {
+                    _releaseTensor(t, mAllocInput);
+                }
+            }
+        }
+    }
+    // Recycle All Dynamic Tensor
+    for (auto& info : mInfo.second) {
+        auto& buffer = info.executeBuffer;
+        for (auto& c : buffer.command) {
+            _recycleDynamicMemory(c.get());
+        }
+    }
+#else
+
     // Alloc tensor
     mBackend->onResizeBegin();
     mBackupBackend->onResizeBegin();
+    int cc = 0;
     for (auto& info : mInfo.second) {
         auto& buffer = info.executeBuffer;
         for (int cmdIndex=0; cmdIndex < buffer.command.size(); ++cmdIndex) {
@@ -938,8 +1079,14 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc, bool forbidReplace) {
             // MNN_PRINT("before Resize: optype:%s, name:%s, input0:%p, output0:%p, mAllocInput:%d\n", EnumNameOpType(iter.op->type()), iter.info->name().c_str(), iter.inputs[0], iter.outputs[0], mAllocInput);
             // Alloc for Tensors
             auto curBackend = iter.execution->backend();
+            printf("cc=%d ####################optype: %s \n", cc, EnumNameOpType(iter.op->type()));
             if (mAllocInput) {
                 for (auto t : iter.workInputs) {
+                    auto rc = TensorUtils::getDescribe(t)->useCount;
+                    if (rc == 0) {
+                        printf("break\n");
+                    }
+                    printf("input......: %p use count = %d\n", t, rc);
                     auto allocRes = _allocTensor(t, curBackend, mOutputStatic);
                     if (!allocRes) {
                         return OUT_OF_MEMORY;
@@ -948,6 +1095,7 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc, bool forbidReplace) {
             }
             {
                 for (auto t : iter.workOutputs) {
+                    printf("output......: %p\n", t);
                     auto res = _allocTensor(t, curBackend, mOutputStatic);
                     if (!res) {
                         return OUT_OF_MEMORY;
@@ -959,7 +1107,12 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc, bool forbidReplace) {
                 MNN_PRINT("before Resize 2, calling: %s - %d \n", iter.info->name().c_str(), cmdIndex);
             }
 #endif
-            auto code = iter.execution->onResize(iter.workInputs, iter.workOutputs);
+            auto code = iter.execution->onResizeStaticMemPlan(iter.workInputs, iter.workOutputs);
+            if (NO_ERROR != code && (!iter.info.get())) {
+                MNN_ERROR("onResizeStaticMemPlan error for type = %s, name = %s \n", iter.info->type().c_str(), iter.info->name().c_str());
+                return code;
+            }
+            code = iter.execution->onResize(iter.workInputs, iter.workOutputs);
             if (NO_ERROR != code && (!iter.info.get())) {
                 MNN_ERROR("Resize error for type = %s, name = %s \n", iter.info->type().c_str(), iter.info->name().c_str());
                 return code;
@@ -968,6 +1121,7 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc, bool forbidReplace) {
             for (auto t : iter.workInputs) {
                 _releaseTensor(t, mAllocInput);
             }
+            cc++;
         }
     }
     // Recycle All Dynamic Tensor
@@ -977,6 +1131,7 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc, bool forbidReplace) {
             _recycleDynamicMemory(c.get());
         }
     }
+#endif
     auto code = mBackend->onResizeEnd();
     if (code != NO_ERROR) {
         return code;
@@ -1017,14 +1172,15 @@ ErrorCode Pipeline::execute() {
         for (auto& cmdP : buffer.command) {
             auto& cmd = *cmdP;
             auto code = cmd.execution->onExecute(cmd.workInputs, cmd.workOutputs);
-// #define LOG_VERPOSE
+//#define LOG_VERPOSE
 #ifdef LOG_VERPOSE
             auto dumpT = [](Tensor* t) {
                 auto size = TensorUtils::getRawSize(t);
                 size = size > 10 ? 10 : size;
                 if (t->getType() == halide_type_of<float>()) {
+                    auto ht = Tensor::createHostTensorFromDevice(t);
                     for (int i=0; i<size; ++i) {
-                        MNN_PRINT("%f, ", t->host<float>()[i]);
+                        MNN_PRINT("%f, ", ht->host<float>()[i]);
                     }
                 } else {
                     for (int i=0; i<size; ++i) {
@@ -1033,8 +1189,8 @@ ErrorCode Pipeline::execute() {
                 }
                 MNN_PRINT("\n");
             };
-            if (/* cmd.op->name() && cmd.op->name()->str() == "/embed/embed_/Gather_output_0"*/
-                cmd.op->type() == OpType_Convolution) {
+            if (true/* cmd.op->name() && cmd.op->name()->str() == "/embed/embed_/Gather_output_0"
+                cmd.op->type() == OpType_Convolution*/) {
                 MNN_PRINT("%s Input begin:\n", EnumNameOpType(cmd.op->type()));
                 for (auto t : cmd.workInputs) {
                     dumpT(t);

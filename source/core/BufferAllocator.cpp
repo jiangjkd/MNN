@@ -173,7 +173,6 @@ bool EagerBufferAllocator::free(MemChunk chunk) {
     // get node
     auto x = mUsedList.find(pointer);
     if (x == mUsedList.end()) {
-        MNN_ASSERT(false);
         return false;
     }
     // mark as reusable

@@ -36,6 +36,9 @@ public:
      */
     virtual ~Execution() = default;
 
+    virtual ErrorCode onResizeStaticMemPlan(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
+        return NO_ERROR;
+    }
     /**
      * @brief response shape change of input or output tensors.
      * @param inputs    input tensors

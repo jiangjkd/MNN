@@ -38,7 +38,7 @@ static void writeSamplerInfo(SamplerInfo& info, const Tensor::InsideDescribe::Re
 MetalRaster::MetalRaster(Backend *backend) : Execution(backend) {
     // Do nothing
 }
-ErrorCode MetalRaster::onResize(const std::vector<Tensor *> &____inputs, const std::vector<Tensor *> &outputs) {
+ErrorCode MetalRaster::onResizeStaticMemPlan(const std::vector<Tensor *> &____inputs, const std::vector<Tensor *> &outputs) {
     MNN_ASSERT(outputs.size() == 1);
     OpCommonUtils::rasterInputReset(____inputs, outputs[0]);
     auto output = outputs[0];
@@ -50,7 +50,7 @@ ErrorCode MetalRaster::onResize(const std::vector<Tensor *> &____inputs, const s
 
     mTempInput.clear();
     mTempOutput = nullptr;
-    mOutputPtr = (id<MTLBuffer>)((MetalRuntimeAllocator::MetalBufferAlloc *)(output->deviceId()))->getBuffer();
+
 #ifndef MNN_METAL_FORBID_RASTER_C4
     if (outputDes->dimensionFormat == MNN_DATA_FORMAT_NC4HW4) {
         bool fast = true;
@@ -66,44 +66,7 @@ ErrorCode MetalRaster::onResize(const std::vector<Tensor *> &____inputs, const s
             }
         }
         mFast = fast;
-        if (fast) {
-            NSString* kernelName = nil;
-            switch (bytes) {
-                case 4:
-                    kernelName = @"blit_intx4";
-                    break;
-                case 2:
-                    kernelName = @"blit_int64";
-                    break;
-                case 1:
-                    kernelName = @"blit_int";
-                    break;
-                default:
-                    break;
-            }
-            if (outputs[0]->getType().code == halide_type_float) {
-#if MNN_METAL_FULL_PRECISION
-                kernelName = @"blit_intx4";
-#else
-                kernelName = @"blit_int64";
-#endif
-            }
-            mBlitPipeline = [context pipelineWithName:kernelName];
-
-            for (int i=0; i< des->regions.size(); ++i) {
-                auto& slice = des->regions[i];
-                Tensor::InsideDescribe::Region newRegion;
-                OpCommonUtils::turnToPackRegion(slice, newRegion, output, 4);
-                newRegion.dst.offset /= 4;
-                newRegion.src.offset /= 4;
-                SamplerInfo info;
-                writeSamplerInfo(info, newRegion);
-                auto local = [context computeBestGroupAndLocal:mBlitPipeline threads:MTLSizeMake(newRegion.size[0], newRegion.size[1], newRegion.size[2])];
-                auto buffer = [context newDeviceBuffer:sizeof(SamplerInfo) bytes:&info access:CPUWriteOnly];
-                mTempInputCopy.emplace_back(std::make_tuple(( id<MTLBuffer>)((MetalRuntimeAllocator::MetalBufferAlloc *)newRegion.origin->deviceId())->getBuffer(), buffer, local.first, local.second, TensorUtils::getDescribe(newRegion.origin)->extra.offset));
-            }
-            return NO_ERROR;
-        }
+        if (mFast) return NO_ERROR;
     }
 #endif
     for (int i=0; i< des->regions.size(); ++i) {
@@ -126,26 +89,100 @@ ErrorCode MetalRaster::onResize(const std::vector<Tensor *> &____inputs, const s
         mTempOutput.reset(new Tensor);
         TensorUtils::setupTensorInfo(output, mTempOutput.get(), MNN_DATA_FORMAT_NCHW);
     }
+
     if (nullptr != mTempOutput) {
-        auto res = backend()->onAcquireBuffer(mTempOutput.get(), Backend::DYNAMIC);
-        if (!res) {
-            return OUT_OF_MEMORY;
+        backend()->onAcquireBuffer(mTempOutput.get(), Backend::STATIC_PLAN);
+    }
+    for (auto& iter : mTempInput) {
+        backend()->onAcquireBuffer(iter.second.get(), Backend::STATIC_PLAN);
+    }
+    for (auto& iter : mTempInput) {
+        backend()->onReleaseBuffer(iter.second.get(), Backend::STATIC_PLAN);
+    }
+    if (nullptr != mTempOutput) {
+        backend()->onReleaseBuffer(mTempOutput.get(), Backend::STATIC_PLAN);
+    }
+    return NO_ERROR;
+}
+
+ErrorCode MetalRaster::onResize(const std::vector<Tensor *> &____inputs, const std::vector<Tensor *> &outputs) {
+    MNN_ASSERT(outputs.size() == 1);
+    OpCommonUtils::rasterInputReset(____inputs, outputs[0]);
+    auto output = outputs[0];
+    auto outputDes = TensorUtils::getDescribe(output);
+    auto des = outputDes;
+    mNeedZero = !TensorUtils::regionIsFull(output);
+    auto context  = (__bridge MNNMetalContext *)static_cast<MetalBackend *>(backend())->context();
+    auto bytes = outputs[0]->getType().bytes();
+    mOutputPtr = (id <MTLBuffer>) ((MetalRuntimeAllocator::MetalBufferAlloc *) (output->deviceId()))->getBuffer();
+#ifndef MNN_METAL_FORBID_RASTER_C4
+    if (outputDes->dimensionFormat == MNN_DATA_FORMAT_NC4HW4) {
+        if (mFast) {
+            NSString *kernelName = nil;
+            switch (bytes) {
+                case 4:
+                    kernelName = @"blit_intx4";
+                    break;
+                case 2:
+                    kernelName = @"blit_int64";
+                    break;
+                case 1:
+                    kernelName = @"blit_int";
+                    break;
+                default:
+                    break;
+            }
+            if (outputs[0]->getType().code == halide_type_float) {
+#if MNN_METAL_FULL_PRECISION
+                kernelName = @"blit_intx4";
+#else
+                kernelName = @"blit_int64";
+#endif
+            }
+            mBlitPipeline = [context pipelineWithName:kernelName];
+
+            for (int i = 0; i < des->regions.size(); ++i) {
+                auto &slice = des->regions[i];
+                Tensor::InsideDescribe::Region newRegion;
+                OpCommonUtils::turnToPackRegion(slice, newRegion, output, 4);
+                newRegion.dst.offset /= 4;
+                newRegion.src.offset /= 4;
+                SamplerInfo info;
+                writeSamplerInfo(info, newRegion);
+                auto local = [context computeBestGroupAndLocal:mBlitPipeline threads:MTLSizeMake(
+                        newRegion.size[0], newRegion.size[1], newRegion.size[2])];
+                auto buffer = [context newDeviceBuffer:sizeof(SamplerInfo) bytes:&info access:CPUWriteOnly];
+                mTempInputCopy.emplace_back(std::make_tuple(
+                        (id <MTLBuffer>) ((MetalRuntimeAllocator::MetalBufferAlloc *) newRegion.origin->deviceId())->getBuffer(),
+                        buffer, local.first, local.second,
+                        TensorUtils::getDescribe(newRegion.origin)->extra.offset));
+            }
+            return NO_ERROR;
         }
+    }
+#endif
+    if (nullptr != mTempOutput) {
+        backend()->onAcquireFromStaticPlan(mTempOutput.get());
+//        auto res = backend()->onAcquireBuffer(mTempOutput.get(), Backend::DYNAMIC);
+//        if (!res) {
+//            return OUT_OF_MEMORY;
+//        }
         mOutputPtr = (id<MTLBuffer>)((MetalRuntimeAllocator::MetalBufferAlloc *)(mTempOutput->deviceId()))->getBuffer();
 
     }
     for (auto& iter : mTempInput) {
-        auto res = backend()->onAcquireBuffer(iter.second.get(), Backend::DYNAMIC);
-        if (!res) {
-            return OUT_OF_MEMORY;
-        }
+        backend()->onAcquireFromStaticPlan(iter.second.get());
+//        auto res = backend()->onAcquireBuffer(iter.second.get(), Backend::DYNAMIC);
+//        if (!res) {
+//            return OUT_OF_MEMORY;
+//        }
     }
-    for (auto& iter : mTempInput) {
-        backend()->onReleaseBuffer(iter.second.get(), Backend::DYNAMIC);
-    }
-    if (nullptr != mTempOutput) {
-        backend()->onReleaseBuffer(mTempOutput.get(), Backend::DYNAMIC);
-    }
+//    for (auto& iter : mTempInput) {
+//        backend()->onReleaseBuffer(iter.second.get(), Backend::DYNAMIC);
+//    }
+//    if (nullptr != mTempOutput) {
+//        backend()->onReleaseBuffer(mTempOutput.get(), Backend::DYNAMIC);
+//    }
     NSString* kernelName = nil;
     switch (bytes) {
         case 4:

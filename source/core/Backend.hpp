@@ -77,7 +77,12 @@ public:
          - do NOTHING when `onReleaseBuffer` is called.
          - releases memory when `onClearBuffer` is called or when the backend is deleted.
          */
-        DYNAMIC_SEPERATE
+        DYNAMIC_SEPERATE,
+
+        /**
+         * Only make static alloc play, not alloc mem really.
+         */
+        STATIC_PLAN
     };
 
 public:
@@ -160,6 +165,8 @@ public:
      * @return MemObj for release, if failed, return nullptr.
      */
     virtual MemObj* onAcquire(const Tensor* tensor, StorageType storageType) = 0;
+    virtual void onAcquireFromStaticPlan(const Tensor *Tensor) {};
+    virtual bool onRelease(const Tensor* tensor, StorageType storageType) {return true;};
 
     /**
      * @brief clear all dynamic buffers.
