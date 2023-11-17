@@ -19,7 +19,7 @@ namespace MNN {
 class MetalRaster : public Execution {
 public:
     MetalRaster(Backend *backend);
-    virtual ~MetalRaster() = default;
+    virtual ~MetalRaster();
     virtual ErrorCode onResizeStaticMemPlan(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) override;
     virtual ErrorCode onResize(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) override;
     virtual ErrorCode onExecute(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) override;
