@@ -60,8 +60,10 @@ MetalBackend::MetalBackend(std::shared_ptr<EagerBufferAllocator> staticMem, cons
 }
 MetalBackend::~MetalBackend() {
     // Do nothing
-    delete mStaticPlanMem;
-    mStaticPlanMem = nullptr;
+    if (mStaticPlanMem) {
+        delete mStaticPlanMem;
+        mStaticPlanMem = nullptr;
+    }
 }
 void *MetalBackend::context() const {
     return mRuntime->context();
@@ -184,21 +186,19 @@ void MetalBackend::onAcquireFromStaticPlan(const Tensor *_tensor) {
     }
 
 }
-
+void MetalBackend::onRemoveTempStaticPlan(const Tensor* t) {
+    mTensorChunkInfoMap.erase(t);
+}
 void MetalBackend::onAcquireStaticPlan(const Tensor *_tensor, size_t size) {
     auto tensor  = const_cast<Tensor *>(_tensor);
+    auto des = TensorUtils::getDescribe(tensor);
     auto it = std::find_if(mUseChunkInfoList.begin(), mUseChunkInfoList.end(),[&](const MemChunkInfo& ck){
         return ck.t == tensor;
     });
     if (it == mUseChunkInfoList.end()) {
-        if (mFreeChunkInfoList.empty()) {
-            size_t begin = 0;
-            if (false == mUseChunkInfoList.empty()) {
-                auto ck = mUseChunkInfoList.back();
-                begin = ck.end;
-            }
-            mUseChunkInfoList.emplace_back(MemChunkInfo{const_cast<Tensor *>(_tensor), begin, begin + size});
-            mTensorChunkInfoMap[_tensor] = std::make_tuple(begin, begin + size);
+        if (mFreeChunkInfoList.empty() || des->usage == Tensor::InsideDescribe::Usage::INPUT) {
+            mUseChunkInfoList.emplace_back(MemChunkInfo{const_cast<Tensor *>(_tensor), mStaticPlanSize, mStaticPlanSize + size});
+            mTensorChunkInfoMap[_tensor] = std::make_tuple(mStaticPlanSize, mStaticPlanSize + size);
             mStaticPlanSize += size;
             printf("size = %d mStaticPlanSize = %d\n", size, mStaticPlanSize);
         } else {
@@ -253,9 +253,9 @@ void MetalBackend::onAcquireStaticPlan(const Tensor *_tensor, size_t size) {
 
             }
         }
-        mUseChunkInfoList.sort([](const MemChunkInfo& a, const MemChunkInfo& b){
-            return a.begin < b.begin;
-        });
+//        mUseChunkInfoList.sort([](const MemChunkInfo& a, const MemChunkInfo& b){
+//            return a.begin < b.begin;
+//        });
         mFreeChunkInfoList.sort([](const MemChunkInfo& a, const MemChunkInfo& b){
             return a.size() < b.size();
         });
@@ -278,9 +278,9 @@ void MetalBackend::onReleaseStaticPlan(const Tensor* tensor) {
         mFreeChunkInfoList.emplace_back(*it);
         mUseChunkInfoList.erase(it);
     }
-    mUseChunkInfoList.sort([](const MemChunkInfo& a, const MemChunkInfo& b){
-        return a.begin < b.begin;
-    });
+//    mUseChunkInfoList.sort([](const MemChunkInfo& a, const MemChunkInfo& b){
+//        return a.begin < b.begin;
+//    });
 
     //merge continue space
     mFreeChunkInfoList.sort([](const MemChunkInfo& a, const MemChunkInfo& b){
@@ -523,6 +523,18 @@ void MetalBackend::onResizeBegin() {
     mFrameEncodeCache = false;
     mOpEncoderSet = false;
     mOpEncoders.clear();
+
+    for (auto& tck : mTensorChunkInfoMap) {
+        ((Tensor*)tck.first)->buffer().device = 0;
+    }
+    mStaticPlanSize = 0;
+    mUseChunkInfoList.clear();
+    mFreeChunkInfoList.clear();
+    mTensorChunkInfoMap.clear();
+    if (mStaticPlanMem != nullptr) {
+        delete mStaticPlanMem;
+        mStaticPlanMem = nullptr;
+    }
 
     // Finish last inference task if needed
     flushEncoder();

@@ -148,6 +148,7 @@ public:
     
     virtual Backend::MemObj* onAcquire(const Tensor *Tensor, StorageType storageType) override;
     virtual void onAcquireFromStaticPlan(const Tensor *Tensor) override;
+    virtual void onRemoveTempStaticPlan(const Tensor *Tensor) override;
     virtual bool onRelease(const Tensor* tensor, StorageType storageType) override;
     virtual bool onClearBuffer() override;
     virtual void onCopyBuffer(const Tensor *srcTensor, const Tensor *dstTensor) const override;

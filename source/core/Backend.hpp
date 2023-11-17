@@ -166,6 +166,7 @@ public:
      */
     virtual MemObj* onAcquire(const Tensor* tensor, StorageType storageType) = 0;
     virtual void onAcquireFromStaticPlan(const Tensor *Tensor) {};
+    virtual void onRemoveTempStaticPlan(const Tensor *Tensor) {};
     virtual bool onRelease(const Tensor* tensor, StorageType storageType) {return true;};
 
     /**
