@@ -144,9 +144,9 @@ private:
 private:
     RuntimeInfo mRuntime;
     std::vector<std::shared_ptr<Pipeline>> mPipelines;
-    bool mNeedResize = true;
+    bool mNeedResize = false;
     bool mValid      = true;
-    bool mNeedMalloc = true;
+    bool mNeedMalloc = false;
     Interpreter::SessionMode mCallBackMode;
     Interpreter::SessionMode mMemoryUsageMode;
     Interpreter::SessionMode mCodegenMode;

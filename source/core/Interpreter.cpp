@@ -459,7 +459,7 @@ const std::map<std::string, Tensor*>& Interpreter::getSessionOutputAll(const Ses
     return tensors;
 }
 void Interpreter::resizeSession(Session* session) {
-    resizeSession(session, 0);
+    resizeSession(session, 1);
 }
 
 void Interpreter::resizeSession(Session* session, int needRelloc) {
@@ -469,6 +469,7 @@ void Interpreter::resizeSession(Session* session, int needRelloc) {
         return;
     }
     if (1 == needRelloc) {
+        session->setNeedResize(true);
         session->setNeedMalloc(true);
     }
     session->resize();
