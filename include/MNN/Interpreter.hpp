@@ -416,7 +416,7 @@ public:
 
 private:
     static Interpreter* createFromBufferInternal(Content* net, bool enforceAuth);
-
+    int mNeedMalloc = 1;
     Content* mNet = nullptr;
     Interpreter(Content* net);
 

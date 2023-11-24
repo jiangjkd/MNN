@@ -65,6 +65,9 @@ Session::Session(Schedule::ScheduleInfo&& info, const ModeGroup& mode, RuntimeIn
     mCallBackMode = mode.callBackMode;
     mMemoryUsageMode = mode.memoryUsageMode;
     mCodegenMode = mode.codegenMode;
+    bool mNeedResize = false;
+    bool mValid      = true;
+    bool mNeedMalloc = false;
 }
 
 Session::~Session() {
@@ -166,11 +169,11 @@ void Session::_clearCache() {
 
 ErrorCode Session::resize() {
 #ifdef LOG_VERBOSE
-    for (auto& iter : mInputs) {
+    for (auto& iter : mInfo.inputTensors) {
         auto& inputTensor = iter.second;
         MNN_PRINT("before resize, input name:%s, ptr:%p, hostPtr:%p,  shape:", iter.first.c_str(), inputTensor, inputTensor->host<void>());
         inputTensor->printShape();
-        MNN_PRINT("\n");
+        //MNN_PRINT("\n");
     }
 #endif
     bool permitCodegen = mCodegenMode == Interpreter::Session_Codegen_Enable;
@@ -223,11 +226,11 @@ ErrorCode Session::resize() {
 
 #ifdef LOG_VERBOSE
     MNN_PRINT("session after resize\n");
-    for (auto& iter : mOutputs) {
+    for (auto& iter : mInfo.outputTensor) {
         auto& outputTensor = iter.second;
         MNN_PRINT("output name:%s, ptr:%p,shape:", iter.first.c_str(), outputTensor);
         outputTensor->printShape();
-        MNN_PRINT("\n");
+        //MNN_PRINT("\n");
     }
 #endif
     return NO_ERROR;

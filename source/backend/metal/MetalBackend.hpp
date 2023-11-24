@@ -147,7 +147,7 @@ public:
     }
     
     virtual Backend::MemObj* onAcquire(const Tensor *Tensor, StorageType storageType) override;
-    virtual void onAcquireFromStaticPlan(const Tensor *Tensor) override;
+    virtual void onAllocFromStaticPlan(const Tensor *Tensor) override;
     virtual void onRemoveTempStaticPlan(const Tensor *Tensor) override;
     virtual bool onRelease(const Tensor* tensor, StorageType storageType) override;
     virtual bool onClearBuffer() override;
@@ -155,7 +155,10 @@ public:
 
     virtual Execution *onCreate(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs,
                                 const MNN::Op *op) override;
-    
+
+    virtual void onStaticMemPlanBegin() override;
+    virtual void onStaticMemPlanEnd() override;
+
     virtual void onResizeBegin() override;
     virtual ErrorCode onResizeEnd() override;
     virtual void onExecuteBegin() const override;
@@ -193,14 +196,23 @@ public:
     }
 
     bool isCmdBufferCommit();
-    
+
+    bool isBigMode() {return mBigMode;}
 private:
-    //start for mem static plan
+
     std::list<MemChunkInfo> mUseChunkInfoList;
     std::list<MemChunkInfo> mFreeChunkInfoList;
-    size_t mStaticPlanSize = 0;
+    //start for mem static plan mode
+    bool mBigMode = false;
     std::unordered_map<const Tensor*,  std::tuple<size_t, size_t>> mTensorChunkInfoMap;
+    size_t mStaticPlanSize = 0;
+    // for small block mode
+    std::unordered_map<const Tensor*,  std::tuple<size_t, size_t>> mSmallModeTensorChunkInfoMap;
+    size_t mSmallModeStaticPlanSize = 0;
+
+
     Backend::MemObj* mStaticPlanMem = nullptr;
+
     //end
 
     const MetalRuntime* mRuntime;

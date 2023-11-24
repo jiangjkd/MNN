@@ -111,6 +111,12 @@ public:
     virtual Execution* onCreate(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs,
                                 const MNN::Op* op) = 0;
 
+    virtual void onStaticMemPlanBegin() {
+        // nothing to do
+    }
+    virtual void onStaticMemPlanEnd() {
+        // nothing to do
+    }
     /**
      * @brief callback before resize ops.
      */
@@ -165,8 +171,8 @@ public:
      * @return MemObj for release, if failed, return nullptr.
      */
     virtual MemObj* onAcquire(const Tensor* tensor, StorageType storageType) = 0;
-    virtual void onAcquireFromStaticPlan(const Tensor *Tensor) {};
     virtual void onRemoveTempStaticPlan(const Tensor *Tensor) {};
+    virtual void onAllocFromStaticPlan(const Tensor *Tensor) {};
     virtual bool onRelease(const Tensor* tensor, StorageType storageType) {return true;};
 
     /**

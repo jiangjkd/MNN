@@ -249,6 +249,7 @@ Interpreter::~Interpreter() {
 }
 
 Session* Interpreter::createMultiPathSession(const std::vector<ScheduleConfig>& configs) {
+    mNeedMalloc = 1;
     RuntimeInfo runtime = createRuntime(configs);
     runtime.second->setExternalFile(mNet->externalFile);
     runtime.second->setAllocatorType(mNet->modes.memoryAllocatorType);
@@ -459,7 +460,12 @@ const std::map<std::string, Tensor*>& Interpreter::getSessionOutputAll(const Ses
     return tensors;
 }
 void Interpreter::resizeSession(Session* session) {
-    resizeSession(session, 1);
+    if (0 == mNeedMalloc) {
+        session->setNeedResize(false);
+        session->setNeedMalloc(false);
+    }
+    resizeSession(session, mNeedMalloc);
+
 }
 
 void Interpreter::resizeSession(Session* session, int needRelloc) {
@@ -473,6 +479,8 @@ void Interpreter::resizeSession(Session* session, int needRelloc) {
         session->setNeedMalloc(true);
     }
     session->resize();
+    mNeedMalloc = 0;
+
 }
 
 ErrorCode Interpreter::runSessionWithCallBack(const Session* session, const TensorCallBack& before,

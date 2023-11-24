@@ -60,6 +60,8 @@ public:
         return mInfo.first.cache.first->type();
     }
 private:
+    void _computeRefCount();
+    ErrorCode _scheduleStaticMemForMetal(bool final = false);
     void _copyInputs();
     void _pushTuningTask(std::vector<Schedule::OpCacheInfo>&& initInfos);
     void _recycleDynamicMemory(Command* command);
