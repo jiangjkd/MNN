@@ -978,6 +978,26 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc, bool forbidReplace) {
                         return code;
                     }
                     cc++;
+                } else {
+                    {
+                        for (auto t : iter.workOutputs) {
+                            //printf("output......: %p\n", t);
+                            auto res = _allocTensor(t, curBackend, mOutputStatic);
+                            if (!res) {
+                                return OUT_OF_MEMORY;
+                            }
+                        }
+                    }
+#ifdef MNN_PIPELINE_DEBUG
+                    if (iter.info != nullptr) {
+                MNN_PRINT("before Resize 2, calling: %s - %d \n", iter.info->name().c_str(), cmdIndex);
+            }
+#endif
+                    auto code = iter.execution->onResize(iter.workInputs, iter.workOutputs);
+                    if (NO_ERROR != code && (!iter.info.get())) {
+                        MNN_ERROR("Resize error for type = %s, name = %s \n", iter.info->type().c_str(), iter.info->name().c_str());
+                        return code;
+                    }
                 }
             }
         }
@@ -1158,7 +1178,7 @@ ErrorCode Pipeline::_scheduleStaticMemForMetal(bool final) {
 
             auto curBackend = iter.execution->backend();
             if (curBackend->type() == MNN_FORWARD_METAL) {
-                //printf("cc=%d ####################optype: %s \n", cc, EnumNameOpType(iter.op->type()));
+                printf("cc=%d ####################optype: %s \n", cc, EnumNameOpType(iter.op->type()));
                 for (auto t: iter.workInputs) {
                     auto rc = TensorUtils::getDescribe(t)->useCount;
                     //printf("input......: %p use count = %d\n", t, rc);
