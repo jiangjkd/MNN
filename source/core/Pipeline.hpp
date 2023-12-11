@@ -36,6 +36,7 @@ public:
         void setUp(const Command& cmd, int index, const Op* originOp, int totalIndex);
     };
 public:
+    void clearBuffer();
     /** encode :
        1. compute shape for every op's inputs and outputs;
        2. geometry transform;

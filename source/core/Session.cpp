@@ -156,7 +156,11 @@ ErrorCode Session::runWithCallBack(const TensorCallBackWithInfo& before, const T
     }
     return NO_ERROR;
 }
-
+void Session::clearBuffer() {
+    for (auto& iter : mPipelines) {
+        iter->clearBuffer();
+    }
+}
 void Session::_clearCache() {
     for (auto& t : mInfo.allTensors) {
         auto describe = TensorUtils::getDescribe(t.get());

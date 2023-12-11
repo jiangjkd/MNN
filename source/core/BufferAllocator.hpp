@@ -165,7 +165,7 @@ public:
     void barrierEnd() override;
     void beginGroup() override;
     void endGroup() override;
-
+    std::shared_ptr<Allocator> mAllocator;
 private:
     class Node : public RefCount {
     public:
@@ -188,7 +188,7 @@ private:
 
     FREELIST* mCurrentFreeList = nullptr;
     std::vector<std::shared_ptr<FREELIST>> mGroups;
-    std::shared_ptr<Allocator> mAllocator;
+
     size_t mAlign;
 };
 

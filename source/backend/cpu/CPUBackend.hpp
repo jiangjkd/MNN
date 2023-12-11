@@ -80,7 +80,7 @@ public:
     // Return sizeDivide, scheduleNumber aligned memory
     std::pair<int, int> multiThreadDivide(int size) const;
 public:
-    virtual MemObj* onAcquire(const Tensor* nativeTensor, StorageType storageType) override;
+    virtual MemObj* onAcquire(const Tensor* nativeTensor, StorageType storageType, const Tensor* owTensor = nullptr) override;
     virtual bool onClearBuffer() override;
     virtual void onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTensor) const override;
 

@@ -246,6 +246,8 @@ public:
      */
     bool releaseSession(Session* session);
 
+    void releaseBuffer(Session* session);
+
     /**
      * @brief call this function to get tensors ready. output tensor buffer (host or deviceId) should be retrieved
      *        after resize of any input tensor.

@@ -468,6 +468,11 @@ void Interpreter::resizeSession(Session* session) {
 
 }
 
+void Interpreter::releaseBuffer(Session *session)  {
+    session->clearBuffer();
+    mNeedMalloc = 1;
+}
+
 void Interpreter::resizeSession(Session* session, int needRelloc) {
     std::unique_lock<std::mutex> _l(mNet->lock);
     if (mNet->buffer.get() == nullptr) {

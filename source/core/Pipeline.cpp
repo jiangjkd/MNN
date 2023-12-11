@@ -170,11 +170,11 @@ static bool _allocTensor(Tensor* t, Backend* curBackend, bool outputStatic) {
     return true;
 }
 
-static bool _planAllocTensor(Tensor* t, Backend* curBackend) {
+static bool _planAllocTensor(Tensor* t, Backend* curBackend, Tensor* owt = nullptr) {
     auto des = TensorUtils::getDescribe(t);
     if (nullptr == des->mem.get()) {
         TensorUtils::setLinearLayout(t);
-        return curBackend->onAcquireBuffer(t, Backend::STATIC_PLAN);
+        return curBackend->onAcquireBuffer(t, Backend::STATIC_PLAN, owt);
     }
     return true;
 }
@@ -258,6 +258,13 @@ Pipeline::Pipeline(Schedule::PipelineInfo&& info, bool allocInput, bool outputSt
         }
     }
 
+}
+void Pipeline::clearBuffer() {
+    /* Create Execution Begin */
+    auto& mBackend = mInfo.first.cache.first;
+    auto& mBackupBackend = mInfo.first.cache.second;
+    mBackend->onClearPoolStatic();
+    mBackupBackend->onClearBuffer();
 }
 ErrorCode Pipeline::encode(bool supportDebug, bool permitCodegen) {
     auto& mBackend = mInfo.first.cache.first;
@@ -711,6 +718,7 @@ static ErrorCode _InsertCopy(Schedule::PipelineInfo& mInfo, std::map<Tensor*, st
     std::map<std::pair<Tensor*, Backend*>, std::shared_ptr<Tensor>> wrapCache;
     std::shared_ptr<BufferStorage> copyOp;
     shapeFixConstCache.clear();
+    int cc = 0;
     for (auto& info : mInfo.second) {
         auto& buffer = info.executeBuffer;
         if (buffer.command.empty()) {
@@ -718,7 +726,11 @@ static ErrorCode _InsertCopy(Schedule::PipelineInfo& mInfo, std::map<Tensor*, st
         }
         auto commands = std::move(buffer.command);
         for (auto& iterP : commands) {
+            if (cc == 69) {
+                printf("break;\n");
+            }
             auto& iter = *iterP;
+            printf("_InsertCopy  cc = %d  iter.op->type() = %d\n",cc++, iter.op->type());
             if (iter.op->type() == OpType_Copy) {
                 continue;
             }
@@ -935,17 +947,17 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc, bool forbidReplace) {
 
     // Static Memory Alloc Plan for Metal
     if (mBackend->type() == MNN_FORWARD_METAL) {
-        printf("Exec StaticPlan0.....\n");
-        auto code = _scheduleStaticMemForMetal();
-        if (NO_ERROR != code) {
-            return code;
-        }
-        // Compute RefCount Begin
-        _computeRefCount();
-        // Compute RefCount End
+//        printf("Exec StaticPlan0.....\n");
+//        auto code = _scheduleStaticMemForMetal();
+//        if (NO_ERROR != code) {
+//            return code;
+//        }
+//        // Compute RefCount Begin
+//        _computeRefCount();
+//        // Compute RefCount End
 
         printf("Exec StaticPlan1.....\n");
-        code = _scheduleStaticMemForMetal(true);
+        auto code = _scheduleStaticMemForMetal(true);
         if (NO_ERROR != code) {
             return code;
         }
@@ -960,7 +972,10 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc, bool forbidReplace) {
 
                 auto curBackend = iter.execution->backend();
                 if (curBackend->type() == MNN_FORWARD_METAL) {
-                    //printf("cc=%d ####################optype: %s \n", cc,EnumNameOpType(iter.op->type()));
+                    if (cc == 4) {
+                        printf("break;\n");
+                    }
+                    printf("cc=%d ####################optype: %s \n", cc++,EnumNameOpType(iter.op->type()));
 
                     for (auto t: iter.workInputs) {
                         //printf("input......: %p\n", t);
@@ -970,18 +985,17 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc, bool forbidReplace) {
                         //printf("output......: %p\n", t);
                         curBackend->onAllocFromStaticPlan(t);
                     }
-                    //printf("--------------optype: %s onResize\n", EnumNameOpType(iter.op->type()));
+                    // printf("--------------optype: %s onResize\n", EnumNameOpType(iter.op->type()));
                     auto code = iter.execution->onResize(iter.workInputs, iter.workOutputs);
                     if (NO_ERROR != code && (!iter.info.get())) {
                         MNN_ERROR("Resize error for type = %s, name = %s \n", iter.info->type().c_str(),
                                   iter.info->name().c_str());
                         return code;
                     }
-                    cc++;
                 } else {
                     {
                         for (auto t : iter.workOutputs) {
-                            //printf("output......: %p\n", t);
+                            //printf("##output......: %p\n", t);
                             auto res = _allocTensor(t, curBackend, mOutputStatic);
                             if (!res) {
                                 return OUT_OF_MEMORY;
@@ -1178,16 +1192,46 @@ ErrorCode Pipeline::_scheduleStaticMemForMetal(bool final) {
 
             auto curBackend = iter.execution->backend();
             if (curBackend->type() == MNN_FORWARD_METAL) {
-                printf("cc=%d ####################optype: %s \n", cc, EnumNameOpType(iter.op->type()));
+                auto icnt = iter.workInputs.size();
+                auto ocnt = iter.workOutputs.size();
+                printf("cc=%d ####################optype: %s icnt = %d ocnt = %d\n",
+                       cc, EnumNameOpType(iter.op->type()), icnt, ocnt);
+//                if (cc == 69) {
+//                    printf("break;\n");
+//                }
                 for (auto t: iter.workInputs) {
                     auto rc = TensorUtils::getDescribe(t)->useCount;
-                    //printf("input......: %p use count = %d\n", t, rc);
+                    printf("input......: %p use count = %d  ic = %d iw = %d ih = %d size = %d\n",
+                           t, rc, t->channel(), t->width(), t->height(), t->size());
                     _planAllocTensor(t, curBackend);
                 }
                 for (auto t: iter.workOutputs) {
-                    //printf("output......:%p use count = %d\n", t, TensorUtils::getDescribe(t)->useCount);
-                    _planAllocTensor(t, curBackend);
+                    printf("output......:%p use count = %d  oc = %d ow = %d oh = %d size = %d\n",
+                           t, TensorUtils::getDescribe(t)->useCount,  t->channel(), t->width(), t->height(), t->size());
+
+
+                        auto inputT = iter.workInputs[0];
+                        auto outputT = iter.workOutputs[0];
+                        auto isz = inputT->size();
+                        auto osz = outputT->size();
+                        auto irc = TensorUtils::getDescribe(inputT)->useCount;
+                        auto orc = TensorUtils::getDescribe(outputT)->useCount;
+
+                        if (irc == 1 &&
+                            isz == osz &&
+                            (iter.op->type() == OpType_ReLU
+                             || iter.op->type() == OpType_Sigmoid
+                             || iter.op->type() == OpType_UnaryOp
+                             || iter.op->type() == OpType_Softmax
+                             || iter.op->type() == OpType_TanH
+                             || iter.op->type() == OpType_BinaryOp)) {
+                            _planAllocTensor(t, curBackend, inputT);
+                        } else {
+                            _planAllocTensor(t, curBackend);
+                        }
+
                 }
+                printf("onResizeStaticMemPlan...\n");
                 auto code = iter.execution->onResizeStaticMemPlan(iter.workInputs, iter.workOutputs);
                 if (NO_ERROR != code && (!iter.info.get())) {
                     MNN_ERROR("onResizeStaticMemPlan error for type = %s, name = %s \n", iter.info->type().c_str(), iter.info->name().c_str());
@@ -1196,6 +1240,8 @@ ErrorCode Pipeline::_scheduleStaticMemForMetal(bool final) {
                 // Free mid tensor
                 for (auto t: iter.workInputs) {
                     _planReleaseTensor(t, mAllocInput);
+                    auto rc = TensorUtils::getDescribe(t)->useCount;
+                    printf("release input......: %p use count = %d\n", t, rc);
                 }
                 cc++;
             }
@@ -1226,10 +1272,12 @@ void Pipeline::_copyInputs() {
     }
 }
 ErrorCode Pipeline::execute() {
+    printf("execute...\n");
     _copyInputs();
     auto& mBackend = mInfo.first.cache.first;
     auto& mBackupBackend = mInfo.first.cache.second;
     mBackend->onExecuteBegin();
+    int cc = 0;
     for (auto& info : mInfo.second) {
         auto& buffer = info.executeBuffer;
 //#define LOG_VERPOSE
@@ -1238,6 +1286,11 @@ ErrorCode Pipeline::execute() {
 #endif
         for (auto& cmdP : buffer.command) {
             auto& cmd = *cmdP;
+//            printf("cc = %d exec ####################optype: %s \n", cc,  EnumNameOpType(cmd.op->type()));
+//            if (cc == 69) {
+//                printf("break;\n");
+//            }
+            cc++;
             auto code = cmd.execution->onExecute(cmd.workInputs, cmd.workOutputs);
 //#define LOG_VERPOSE
 #ifdef LOG_VERPOSE

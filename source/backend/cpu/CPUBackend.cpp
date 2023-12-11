@@ -311,7 +311,7 @@ Backend::MemObj* CPUBackend::allocBuffer(size_t size, Tensor* dest, StorageType 
     return res;
 }
 
-Backend::MemObj* CPUBackend::onAcquire(const MNN::Tensor* nativeTensorConst, StorageType storageType) {
+Backend::MemObj* CPUBackend::onAcquire(const MNN::Tensor* nativeTensorConst, StorageType storageType, const Tensor *owTensor) {
     if (nativeTensorConst == nullptr) {
         return nullptr;
     }

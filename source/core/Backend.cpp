@@ -72,8 +72,8 @@ bool MNNCPUCopyBuffer(const Tensor* srcTensor, const Tensor* dstTensor) {
     return true;
 }
 
-bool Backend::onAcquireBuffer(const Tensor* tensor, StorageType storageType) {
-    auto mem = this->onAcquire(tensor, storageType);
+bool Backend::onAcquireBuffer(const Tensor* tensor, StorageType storageType,  const Tensor* owTensor) {
+    auto mem = this->onAcquire(tensor, storageType, owTensor);
     if (nullptr == mem) {
         return false;
     }

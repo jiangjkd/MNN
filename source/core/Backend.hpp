@@ -148,7 +148,7 @@ public:
      * @param storageType   buffer storage type.
      * @return success or not.
      */
-    MNN_PUBLIC bool onAcquireBuffer(const Tensor* tensor, StorageType storageType);
+    MNN_PUBLIC bool onAcquireBuffer(const Tensor* tensor, StorageType storageType, const Tensor* owTensor = nullptr);
 
     /**
      * @brief release buffer of tensor for given storage type.
@@ -170,7 +170,7 @@ public:
      * @param storageType   buffer storage type.
      * @return MemObj for release, if failed, return nullptr.
      */
-    virtual MemObj* onAcquire(const Tensor* tensor, StorageType storageType) = 0;
+    virtual MemObj* onAcquire(const Tensor* tensor, StorageType storageType, const Tensor* owTensor = nullptr) = 0;
     virtual void onRemoveTempStaticPlan(const Tensor *Tensor) {};
     virtual void onAllocFromStaticPlan(const Tensor *Tensor) {};
     virtual bool onRelease(const Tensor* tensor, StorageType storageType) {return true;};
@@ -180,6 +180,8 @@ public:
      * @return success or not.
      */
     virtual bool onClearBuffer() = 0;
+
+    virtual void onClearPoolStatic() {};
 
     /**
      * @brief copy buffer from tensor to tensor.

@@ -32,7 +32,14 @@ struct MemChunkInfo {
     Tensor* t;
     size_t begin;
     size_t end;
+    bool bOverWrite = false;
 public:
+    MemChunkInfo(Tensor* _t, size_t _begin, size_t _end ) {
+        t = _t;
+        begin = _begin;
+        end = _end;
+        bOverWrite = false;
+    }
     size_t size() const {
         return end - begin;
     }
@@ -99,7 +106,9 @@ public:
         id<MTLBuffer> getBuffer() {
             return mBuffer;
         }
-        ~MetalBufferAlloc(){};
+        ~MetalBufferAlloc(){
+            mBuffer = nil;
+        };
     private:
         id<MTLBuffer> mBuffer = nil;
     };
@@ -146,11 +155,12 @@ public:
         return mRuntime;
     }
     
-    virtual Backend::MemObj* onAcquire(const Tensor *Tensor, StorageType storageType) override;
+    virtual Backend::MemObj* onAcquire(const Tensor *Tensor, StorageType storageType, const class Tensor *owTensor = nullptr) override;
     virtual void onAllocFromStaticPlan(const Tensor *Tensor) override;
     virtual void onRemoveTempStaticPlan(const Tensor *Tensor) override;
     virtual bool onRelease(const Tensor* tensor, StorageType storageType) override;
     virtual bool onClearBuffer() override;
+    virtual void onClearPoolStatic() override;
     virtual void onCopyBuffer(const Tensor *srcTensor, const Tensor *dstTensor) const override;
 
     virtual Execution *onCreate(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs,
@@ -230,7 +240,7 @@ private:
     std::shared_ptr<EagerBufferAllocator> mStaticBufferPool;
 
 private:
-    void onAcquireStaticPlan(const Tensor *Tensor, size_t size);
+    void onAcquireStaticPlan(const Tensor *Tensor, size_t size, const class Tensor *owTenser = nullptr);
     void onReleaseStaticPlan(const Tensor* tensor);
     mutable id<MTLBuffer> mHostBuffer = nullptr;
     void onCopyHostToDevice(const Tensor *src, const Tensor *dst) const;
